@@ -22,6 +22,14 @@
 ;; Don't load outdated bytecode
 (setq load-prefer-newer t)
 
+;; Mint uses GitFS/sparse checkout. Emacs VC probes can expand the sparse index
+;; and make opening files take 10+ seconds.
+(require 'vc)
+(setq vc-ignore-dir-regexp
+      (concat vc-ignore-dir-regexp
+              "\\|"
+              (regexp-quote (expand-file-name "~/stripe/mint/"))))
+
 ;; Report startup time
 (add-hook 'emacs-startup-hook
           (lambda ()
@@ -1534,7 +1542,13 @@
  ;; If there is more than one, they won't work right.
  '(case-fold-search t)
  '(inhibit-startup-echo-area-message nil)
- '(package-selected-packages nil)
+ '(package-selected-packages
+   '(apples-mode clang-format+ company csv-mode deadgrep dockerfile-mode
+                 exec-path-from-shell gh-md go-autocomplete go-eldoc
+                 groovy-mode json-mode lsp-ui magit php-mode
+                 prettier-js protobuf-mode puppet-mode scala-mode
+                 solarized-theme terraform-mode thrift typescript-mode
+                 web-mode yaml-mode))
  '(safe-local-variable-values
    '((gotest-ui-additional-test-args "-tags" "dev")
      (go-test-args . " -tags dev")
