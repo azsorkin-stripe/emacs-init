@@ -15,7 +15,8 @@
 ;; Reduce file-name-handler-alist during startup
 (defvar file-name-handler-alist-original file-name-handler-alist)
 (setq file-name-handler-alist nil)
-(add-hook 'emacs-startup-hook
+;; Restore before command-line file args are opened; TRAMP depends on this.
+(add-hook 'after-init-hook
           (lambda ()
             (setq file-name-handler-alist file-name-handler-alist-original)))
 
@@ -23,10 +24,12 @@
 (setq load-prefer-newer t)
 
 ;; Mint uses GitFS/sparse checkout. Emacs VC probes can expand the sparse index
-;; and make opening files take 10+ seconds.
+;; and make opening files take 10+ seconds. Remote VC probes are also slow.
 (require 'vc)
 (setq vc-ignore-dir-regexp
       (concat vc-ignore-dir-regexp
+              "\\|"
+              tramp-file-name-regexp
               "\\|"
               (regexp-quote (expand-file-name "~/stripe/mint/"))))
 
