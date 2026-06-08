@@ -1,0 +1,22 @@
+# Keep this repo focused on hand-written Emacs config.
+*
+!/.gitignore
+!/init.el
+
+# Common local state, caches, and generated package files.
+/.lsp-session-v1
+/auto-save-list/
+/backups/
+/elpa/
+/eln-cache/
+/eshell/
+/network-security.data
+/recentf
+/tramp
+/transient/
+/url/
+
+# Local scratch notes or one-off helper scripts.
+/PERFORMANCE_IMPROVEMENTS.md
+/profile-init.el
+/test-startup.sh
