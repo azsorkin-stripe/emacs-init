@@ -1334,30 +1334,63 @@
   )
 )
 
-;; (setq after-save-hook nil)
-;; to remove:(setq after-save-hook nil)
 ;; To use: call in file where we want to run things, need to know command.
-(defun my-run-on-save-hook (prefix buf-name cmd)
-  (interactive "DDirectory Prefix:\nBBuffer Name for this to be executud in:\nsCommand:")
-  (setq after-save-hook nil)
-  ;; make the buffer if doesn't exist:
-  (if (not (get-buffer buf-name))
-      (new-shell buf-name))
+(defvar my-run-on-save-commands nil
+  "Registered run-on-save commands as (PREFIX BUFFER-NAME COMMAND).")
 
-  ;; prefix is usually ~/something/somewhere, but we need full path
-  (lexical-let ((prefix (file-truename prefix)) (buf-name buf-name) (cmd cmd))
-    (add-hook 'after-save-hook
-              (lambda ()
-                (if (string-prefix-p prefix (buffer-file-name))
-                    (with-current-buffer buf-name
-                      (erase-buffer)
-                      (process-send-string nil (concat cmd "\n"))
-                      )
-                  )
-                )
-              )
-    )
-  )
+(defun my-run-on-save--normalize-prefix (prefix)
+  "Return PREFIX as a canonical directory name for prefix matching."
+  (file-name-as-directory (file-truename (expand-file-name prefix))))
+
+(defun my-run-on-save--remove-command (prefix buf-name)
+  "Remove the run-on-save command for PREFIX and BUF-NAME."
+  (setq my-run-on-save-commands
+        (delq nil
+              (mapcar (lambda (entry)
+                        (unless (and (equal (nth 0 entry) prefix)
+                                     (equal (nth 1 entry) buf-name))
+                          entry))
+                      my-run-on-save-commands))))
+
+(defun my-run-on-save--run-command (buf-name cmd)
+  "Run CMD in BUF-NAME, creating the shell buffer if needed."
+  (unless (get-buffer buf-name)
+    (new-shell buf-name))
+  (with-current-buffer buf-name
+    (erase-buffer)
+    (let ((proc (get-buffer-process (current-buffer))))
+      (if proc
+          (process-send-string proc (concat cmd "\n"))
+        (message "my-run-on-save-hook: no process in buffer %s" buf-name)))))
+
+(defun my-run-on-save--dispatch ()
+  "Run commands registered by `my-run-on-save-hook' for the saved file."
+  (when buffer-file-name
+    (let ((filename (file-truename (expand-file-name buffer-file-name))))
+      (dolist (entry my-run-on-save-commands)
+        (let ((prefix (nth 0 entry))
+              (buf-name (nth 1 entry))
+              (cmd (nth 2 entry)))
+          (when (string-prefix-p prefix filename)
+            (my-run-on-save--run-command buf-name cmd)))))))
+
+(defun my-run-on-save-hook (prefix buf-name cmd)
+  (interactive "DDirectory Prefix:\nBBuffer Name for this to be executed in:\nsCommand: ")
+  (let ((prefix (my-run-on-save--normalize-prefix prefix)))
+    (my-run-on-save--remove-command prefix buf-name)
+    (push (list prefix buf-name cmd) my-run-on-save-commands)
+    (add-hook 'after-save-hook #'my-run-on-save--dispatch)
+    (unless (get-buffer buf-name)
+      (new-shell buf-name))
+    (message "my-run-on-save-hook: will run `%s' in %s after saves under %s"
+             cmd buf-name prefix)))
+
+(defun my-run-on-save-clear ()
+  "Clear all commands registered by `my-run-on-save-hook'."
+  (interactive)
+  (setq my-run-on-save-commands nil)
+  (remove-hook 'after-save-hook #'my-run-on-save--dispatch)
+  (message "my-run-on-save-hook: cleared registered commands"))
 
 ;; (add-hook 'after-save-hook
 ;;           (lambda ()
