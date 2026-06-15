@@ -204,10 +204,13 @@
   "don't open new window with this buffer"
   (if (not (member shell-name (mapcar (lambda (buffer) (buffer-name buffer))
                                       (buffer-list))))
-      (with-current-buffer (shell shell-name)
-        (process-send-string shell-name ". ~/.bash_profile\n")
-        (process-send-string shell-name "[ \"$TERM\" = \"dumb\" ] && export PAGER=/bin/cat\n")
-        (process-send-string shell-name "PS1='$ '\n"))
+      (let ((source-local-profile (and (eq system-type 'darwin)
+                                       (not (file-remote-p default-directory)))))
+        (with-current-buffer (shell shell-name)
+          (when source-local-profile
+            (process-send-string shell-name ". ~/.bash_profile\n"))
+          (process-send-string shell-name "[ \"$TERM\" = \"dumb\" ] && export PAGER=/bin/cat\n")
+          (process-send-string shell-name "PS1='$ '\n")))
     (switch-to-buffer shell-name))
   (get-buffer shell-name))
 
