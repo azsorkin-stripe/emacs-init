@@ -135,6 +135,8 @@
 ;; auto revert all buffers (files + directories)
 (setq global-auto-revert-non-file-buffers t)
 (global-auto-revert-mode 1)
+(setq auto-revert-remote-files t) ;; and also over tramp for remote files.
+
 ;; replace highlighted text typed text
 (delete-selection-mode t)
 
@@ -805,14 +807,17 @@
 
 
 
-;; TODO: hook into the `kill-ring-save` to pbcopy things
-;; (global-set-key "\C-cr" (shell-command-on-region (point) (mark) "pbcopy"))
+(defun az/pbcopy-region (beg end)
+  "Copy region to the local macOS clipboard, including from TRAMP buffers."
+  (interactive "r")
+  (unless (use-region-p)
+    (user-error "No active region"))
+  (let ((default-directory temporary-file-directory))
+    (unless (zerop (call-process-region beg end "/usr/bin/pbcopy" nil nil nil))
+      (user-error "pbcopy failed")))
+  (message "Copied region to local clipboard"))
 
-
-
-;; (defun mycopy ()
-;;   (interactive)
-;;   (shell-command-on-region (point) (mark) "pbcopy"))
+(global-set-key (kbd "C-c y") 'az/pbcopy-region)
 
 
 
@@ -1530,30 +1535,130 @@
 ;; <string-to-search-for>
 
 
+(defun az/chomp (s)
+  (replace-regexp-in-string "[\r\n]+\\'" "" s))
+
+(defun az/file-first-line (file)
+  (when (file-readable-p file)
+    (with-temp-buffer
+      (insert-file-contents file nil 0 4096)
+      (az/chomp (buffer-substring-no-properties
+                 (point-min)
+                 (line-end-position))))))
+
+(defun az/git-packed-ref (git-dir ref)
+  (let ((packed-refs (expand-file-name "packed-refs" git-dir)))
+    (when (file-readable-p packed-refs)
+      (with-temp-buffer
+        (insert-file-contents packed-refs)
+        (goto-char (point-min))
+        (when (re-search-forward
+               (concat "^\\([0-9a-f]+\\) " (regexp-quote ref) "$")
+               nil
+               t)
+          (match-string 1))))))
+
+(defun az/git-common-dir (git-dir)
+  (let ((commondir (az/file-first-line (expand-file-name "commondir" git-dir))))
+    (if commondir
+        (file-name-as-directory (expand-file-name commondir git-dir))
+      git-dir)))
+
+(defun az/git-resolve-ref (git-dir ref)
+  (let* ((common-dir (az/git-common-dir git-dir))
+         (branch (when (string-match "\\`refs/heads/\\(.+\\)\\'" ref)
+                   (match-string 1 ref)))
+         (candidate-refs (append
+                          (list ref)
+                          (when branch
+                            (list (concat "refs/remotes/origin/" branch)))))
+         (candidate-dirs (list git-dir common-dir)))
+    (catch 'found
+      (dolist (candidate-ref candidate-refs)
+        (dolist (candidate-dir candidate-dirs)
+          (let ((ref-file (expand-file-name candidate-ref candidate-dir)))
+            (let ((sha (az/file-first-line ref-file)))
+              (when sha
+                (throw 'found sha)))
+            (let ((sha (az/git-packed-ref candidate-dir candidate-ref)))
+              (when sha
+                (throw 'found sha)))))))))
+
+(defun az/stripe-git-ref-from-root (root)
+  (condition-case nil
+      (let* ((git-entry (expand-file-name ".git" root))
+             (git-dir (cond
+                       ((file-directory-p git-entry) git-entry)
+                       ((file-readable-p git-entry)
+                        (let ((line (az/file-first-line git-entry)))
+                          (when (and line (string-match "\\`gitdir: \\(.+\\)\\'" line))
+                            (expand-file-name (match-string 1 line) root)))))))
+        (when git-dir
+          (let ((head (az/file-first-line (expand-file-name "HEAD" git-dir))))
+            (cond
+             ((not head) nil)
+             ((string-match "\\`ref: \\(.+\\)\\'" head)
+              (az/git-resolve-ref git-dir (match-string 1 head)))
+             (t head)))))
+    (error nil)))
+
+(defun az/tramp-like-localname (file)
+  (or (file-remote-p file 'localname)
+      (when (string-match "\\`/[^:]+:[^:]+:\\(/.*\\)\\'" file)
+        (match-string 1 file))))
+
+(defun az/tramp-like-prefix (file)
+  (or (file-remote-p file)
+      (when (string-match "\\`\\(/[^:]+:[^:]+:\\)/.*\\'" file)
+        (match-string 1 file))))
+
+(defun az/stripe-repo-context-for-buffer ()
+  (let* ((remote-local-file (az/tramp-like-localname buffer-file-name))
+         (remote-prefix (or (az/tramp-like-prefix buffer-file-name) ""))
+         (local-file (or remote-local-file (file-truename buffer-file-name)))
+         (contexts `(("/pay/src/" . "mint")
+                     ("/Users/azsorkin/stripe/mint/" . "mint")
+                     ("/Users/azsorkin/go/src/git.corp.stripe.com/stripe-internal/gocode/" . "gocode"))))
+    (catch 'found
+      (dolist (context contexts)
+        (let ((root (car context))
+              (repo (cdr context)))
+          (when (string-prefix-p root local-file)
+            (throw 'found
+                   (list repo
+                         (concat remote-prefix root)
+                         (substring local-file (length root)))))))
+      (when (string-prefix-p "/Users/azsorkin/stripe/" local-file)
+        (let* ((stripe-root "/Users/azsorkin/stripe/")
+               (rest (substring local-file (length stripe-root)))
+               (repo (car (split-string rest "/")))
+               (root (concat stripe-root repo "/")))
+          (throw 'found
+                 (list repo
+                       (concat remote-prefix root)
+                       (substring local-file (length root))))))
+      (user-error "Don't know how to build a Stripe Git URL for %s" buffer-file-name))))
+
 (defun open-file-in-github ()
   (interactive)
-  ;; Let's make this even better! Open any git repo, by getting the git remote url
-  ;; BUT: don't do this for stripe stuff, since the git commands take for-ever to respond
-
-  (let* (
-         (s "/Users/azsorkin/stripe/")
-         (g "/Users/azsorkin/go/src/git.corp.stripe.com/stripe-internal/")
-         (e "/Users/azsorkin/external-misc-repos/")
-         (line-number (format-mode-line "%l"))
-         (fname (file-truename (buffer-file-name)))
-         (loc (if (string-prefix-p g fname)
-                  g
-                s))
-         (top-level
-          (car (split-string (substring fname (length loc)) "/")))
-         (git-sha (shell-command-to-string "git rev-parse HEAD"))
-         (git-sha-no-newline (substring git-sha 0 (- (length git-sha) 1)))
-         (prefix (concat "https://git.corp.stripe.com/stripe-internal/" top-level "/blob/" git-sha-no-newline))
-         (tail (substring fname (length (concat loc "/" top-level))))
-         (url (concat prefix "/" tail "#L" line-number))
-         )
-    (browse-url url)
-    ))
+  (unless buffer-file-name
+    (user-error "Current buffer is not visiting a file"))
+  (let* ((line-number (number-to-string (line-number-at-pos)))
+         (repo-context (az/stripe-repo-context-for-buffer))
+         (repo-name (nth 0 repo-context))
+         (repo-root (nth 1 repo-context))
+         (relative-path (nth 2 repo-context))
+         (git-ref (or (az/stripe-git-ref-from-root repo-root) "master"))
+         (url (concat "https://git.corp.stripe.com/stripe-internal/"
+                      repo-name
+                      "/blob/"
+                      git-ref
+                      "/"
+                      relative-path
+                      "#L"
+                      line-number)))
+    (let ((default-directory temporary-file-directory))
+      (browse-url url))))
 
 (global-set-key (kbd "C-x j") 'open-file-in-github)
 (global-set-key (kbd "C-x C-j") 'open-file-in-github)
@@ -1582,12 +1687,12 @@
  '(case-fold-search t)
  '(inhibit-startup-echo-area-message nil)
  '(package-selected-packages
-   '(apples-mode clang-format+ company csv-mode deadgrep dockerfile-mode
-                 exec-path-from-shell gh-md go-autocomplete go-eldoc
-                 groovy-mode json-mode lsp-ui magit php-mode
-                 prettier-js protobuf-mode puppet-mode scala-mode
-                 solarized-theme terraform-mode thrift typescript-mode
-                 web-mode yaml-mode))
+   '(0blayout apples-mode clang-format+ company csv-mode deadgrep
+              dockerfile-mode exec-path-from-shell gh-md
+              go-autocomplete go-eldoc groovy-mode json-mode lsp-ui
+              magit php-mode prettier-js protobuf-mode puppet-mode
+              scala-mode solarized-theme terraform-mode thrift
+              typescript-mode web-mode yaml-mode))
  '(safe-local-variable-values
    '((gotest-ui-additional-test-args "-tags" "dev")
      (go-test-args . " -tags dev")
